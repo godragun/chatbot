@@ -1,6 +1,5 @@
 import os
 import streamlit as st
-from streamlit_option_menu import option_menu
 import tempfile
 import fitz  # PyMuPDF
 import ollama
@@ -113,6 +112,8 @@ if 'qa_chain' not in st.session_state:
     st.session_state.qa_chain = None
 if 'selected_model' not in st.session_state:
     st.session_state.selected_model = "llama3"
+if 'page' not in st.session_state:
+    st.session_state.page = "Upload"
 
 # Function to extract text from PDF
 def extract_text_from_pdf(pdf_file):
@@ -294,205 +295,232 @@ def setup_retrieval_chain(text, model_name):
         st.error(f"Error setting up retrieval chain: {e}")
         return None
 
+# Navigation sidebar
+def sidebar_navigation():
+    with st.sidebar:
+        st.title("PDF Document Agent")
+        
+        # Navigation buttons
+        if st.button("📄 Upload", use_container_width=True):
+            st.session_state.page = "Upload"
+        
+        if st.button("📝 Summary", use_container_width=True):
+            st.session_state.page = "Summary"
+            
+        if st.button("❓ Questions", use_container_width=True):
+            st.session_state.page = "Questions"
+            
+        if st.button("🔍 Multiple Choice", use_container_width=True):
+            st.session_state.page = "Multiple Choice"
+            
+        if st.button("💬 Chat", use_container_width=True):
+            st.session_state.page = "Chat"
+        
+        st.markdown("---")
+        
+        # Display current file if any
+        if st.session_state.file_name:
+            st.success(f"Current file: {st.session_state.file_name}")
+
+# Upload Page
+def upload_page():
+    st.title("Upload PDF Document")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        st.markdown("<div class='file-uploader'>", unsafe_allow_html=True)
+        uploaded_file = st.file_uploader("Choose a PDF file", type="pdf", key="pdf_uploader")
+        
+        available_models = get_ollama_models()
+        model_name = st.selectbox("Select OLLAMA Model", options=available_models, index=0)
+        st.session_state.selected_model = model_name
+        
+        if uploaded_file is not None:
+            if st.button("Process PDF"):
+                with st.spinner("Processing PDF..."):
+                    # Extract text from PDF
+                    text = extract_text_from_pdf(uploaded_file)
+                    st.session_state.pdf_text = text
+                    st.session_state.file_name = uploaded_file.name
+                    
+                    # Generate summary
+                    st.session_state.summary = generate_summary(text, model_name)
+                    
+                    # Generate questions
+                    st.session_state.questions = generate_questions(text, model_name)
+                    
+                    # Generate MCQs
+                    st.session_state.mcqs = generate_mcqs(text, model_name)
+                    
+                    # Setup QA chain for chat
+                    st.session_state.qa_chain = setup_retrieval_chain(text, model_name)
+                    
+                    st.success("PDF processed successfully! Navigate to other sections to view results.")
+        st.markdown("</div>", unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("<div class='content-box'>", unsafe_allow_html=True)
+        st.subheader("Instructions")
+        st.write("1. Upload a PDF document")
+        st.write("2. Select an OLLAMA model")
+        st.write("3. Click 'Process PDF'")
+        st.write("4. Navigate to other sections to view generated content")
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+        st.markdown("<div class='content-box'>", unsafe_allow_html=True)
+        st.subheader("Features")
+        st.write("• Automatic summary generation")
+        st.write("• Question and answer extraction")
+        st.write("• Multiple-choice questions")
+        st.write("• Interactive chat with document")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+# Summary Page
+def summary_page():
+    st.title("Document Summary")
+    
+    if st.session_state.summary:
+        st.markdown("<div class='content-box'>", unsafe_allow_html=True)
+        st.markdown("### Summary")
+        st.write(st.session_state.summary)
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+        # Word count and statistics
+        word_count = len(st.session_state.pdf_text.split())
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Word Count", f"{word_count:,}")
+        with col2:
+            st.metric("Pages (est.)", f"{max(1, word_count // 500)}")
+        with col3:
+            st.metric("Reading Time", f"{max(1, word_count // 200)} min")
+            
+    else:
+        st.info("Please upload and process a PDF document first.")
+
+# Questions Page
+def questions_page():
+    st.title("Questions & Answers")
+    
+    if st.session_state.questions:
+        for i, qa in enumerate(st.session_state.questions):
+            with st.expander(f"Q{i+1}: {qa['question']}"):
+                st.write(qa['answer'])
+    else:
+        st.info("Please upload and process a PDF document first.")
+
+# Multiple Choice Page
+def mcq_page():
+    st.title("Multiple Choice Questions")
+    
+    if st.session_state.mcqs:
+        # Create state for tracking answers if not exists
+        if 'mcq_answers' not in st.session_state:
+            st.session_state.mcq_answers = [-1] * len(st.session_state.mcqs)
+        if 'mcq_submitted' not in st.session_state:
+            st.session_state.mcq_submitted = False
+            
+        for i, mcq in enumerate(st.session_state.mcqs):
+            st.markdown(f"<div class='question-card'>", unsafe_allow_html=True)
+            st.markdown(f"<div class='card-header'>Question {i+1}</div>", unsafe_allow_html=True)
+            st.markdown(f"### {mcq['question']}")
+            
+            # Radio buttons for options
+            answer = st.radio(
+                "Select your answer:",
+                mcq['options'],
+                key=f"mcq_{i}"
+            )
+            
+            # Record answer
+            st.session_state.mcq_answers[i] = mcq['options'].index(answer) if answer in mcq['options'] else -1
+            
+            st.markdown("</div>", unsafe_allow_html=True)
+        
+        # Submit button
+        if st.button("Submit Answers"):
+            st.session_state.mcq_submitted = True
+            
+        # Show results if submitted
+        if st.session_state.mcq_submitted:
+            correct_count = 0
+            for i, mcq in enumerate(st.session_state.mcqs):
+                user_answer = st.session_state.mcq_answers[i]
+                correct_answer = mcq['correct_answer']
+                
+                if isinstance(correct_answer, str) and correct_answer.isdigit():
+                    correct_answer = int(correct_answer)
+                
+                if user_answer == correct_answer:
+                    correct_count += 1
+            
+            st.success(f"You got {correct_count} out of {len(st.session_state.mcqs)} correct!")
+            
+            # Reset button
+            if st.button("Try Again"):
+                st.session_state.mcq_submitted = False
+                st.session_state.mcq_answers = [-1] * len(st.session_state.mcqs)
+                st.experimental_rerun()
+    else:
+        st.info("Please upload and process a PDF document first.")
+
+# Chat Page
+def chat_page():
+    st.title("Chat with Document")
+    
+    if st.session_state.qa_chain:
+        # Display chat history
+        for i, message in enumerate(st.session_state.chat_history):
+            if i % 2 == 0:  # User message
+                st.markdown(f"<div class='chat-message user-message'><strong>You:</strong> {message}</div>", unsafe_allow_html=True)
+            else:  # Assistant message
+                st.markdown(f"<div class='chat-message assistant-message'><strong>PDF Agent:</strong> {message}</div>", unsafe_allow_html=True)
+        
+        # Chat input
+        user_question = st.text_input("Ask a question about the document:", key="chat_input")
+        
+        if user_question:
+            if st.button("Send"):
+                with st.spinner("Thinking..."):
+                    # Add user question to history
+                    st.session_state.chat_history.append(user_question)
+                    
+                    # Get chat history in the format expected by the chain
+                    chain_history = []
+                    for i in range(0, len(st.session_state.chat_history)-1, 2):
+                        if i+1 < len(st.session_state.chat_history):
+                            chain_history.append((st.session_state.chat_history[i], st.session_state.chat_history[i+1]))
+                    
+                    # Get response from chain
+                    result = st.session_state.qa_chain({"question": user_question, "chat_history": chain_history})
+                    answer = result["answer"]
+                    
+                    # Add response to history
+                    st.session_state.chat_history.append(answer)
+                    
+                    # Rerun to update the UI
+                    st.experimental_rerun()
+    else:
+        st.info("Please upload and process a PDF document first.")
+
 # Main application
 def main():
-    # Navigation
-    with st.sidebar:
-        selected = option_menu(
-            "PDF Document Agent",
-            ["Upload", "Summary", "Questions", "Multiple Choice", "Chat"],
-            icons=["cloud-upload", "card-text", "question-circle", "list-check", "chat-dots"],
-            menu_icon="book",
-            default_index=0,
-        )
-        
-        st.sidebar.image("https://via.placeholder.com/300x200.png?text=PDF+Agent", use_column_width=True)
-        
-        if st.session_state.file_name:
-            st.sidebar.success(f"Current file: {st.session_state.file_name}")
+    # Show sidebar navigation
+    sidebar_navigation()
     
-    # Upload Page
-    if selected == "Upload":
-        st.title("Upload PDF Document")
-        
-        col1, col2 = st.columns([3, 1])
-        
-        with col1:
-            st.markdown("<div class='file-uploader'>", unsafe_allow_html=True)
-            uploaded_file = st.file_uploader("Choose a PDF file", type="pdf", key="pdf_uploader")
-            
-            available_models = get_ollama_models()
-            model_name = st.selectbox("Select OLLAMA Model", options=available_models, index=0)
-            st.session_state.selected_model = model_name
-            
-            if uploaded_file is not None:
-                if st.button("Process PDF"):
-                    with st.spinner("Processing PDF..."):
-                        # Extract text from PDF
-                        text = extract_text_from_pdf(uploaded_file)
-                        st.session_state.pdf_text = text
-                        st.session_state.file_name = uploaded_file.name
-                        
-                        # Generate summary
-                        st.session_state.summary = generate_summary(text, model_name)
-                        
-                        # Generate questions
-                        st.session_state.questions = generate_questions(text, model_name)
-                        
-                        # Generate MCQs
-                        st.session_state.mcqs = generate_mcqs(text, model_name)
-                        
-                        # Setup QA chain for chat
-                        st.session_state.qa_chain = setup_retrieval_chain(text, model_name)
-                        
-                        st.success("PDF processed successfully! Navigate to other sections to view results.")
-            st.markdown("</div>", unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown("<div class='content-box'>", unsafe_allow_html=True)
-            st.subheader("Instructions")
-            st.write("1. Upload a PDF document")
-            st.write("2. Select an OLLAMA model")
-            st.write("3. Click 'Process PDF'")
-            st.write("4. Navigate to other sections to view generated content")
-            st.markdown("</div>", unsafe_allow_html=True)
-            
-            st.markdown("<div class='content-box'>", unsafe_allow_html=True)
-            st.subheader("Features")
-            st.write("• Automatic summary generation")
-            st.write("• Question and answer extraction")
-            st.write("• Multiple-choice questions")
-            st.write("• Interactive chat with document")
-            st.markdown("</div>", unsafe_allow_html=True)
-    
-    # Summary Page
-    elif selected == "Summary":
-        st.title("Document Summary")
-        
-        if st.session_state.summary:
-            st.markdown("<div class='content-box'>", unsafe_allow_html=True)
-            st.markdown("### Summary")
-            st.write(st.session_state.summary)
-            st.markdown("</div>", unsafe_allow_html=True)
-            
-            # Word count and statistics
-            word_count = len(st.session_state.pdf_text.split())
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Word Count", f"{word_count:,}")
-            with col2:
-                st.metric("Pages (est.)", f"{max(1, word_count // 500)}")
-            with col3:
-                st.metric("Reading Time", f"{max(1, word_count // 200)} min")
-                
-        else:
-            st.info("Please upload and process a PDF document first.")
-    
-    # Questions Page
-    elif selected == "Questions":
-        st.title("Questions & Answers")
-        
-        if st.session_state.questions:
-            for i, qa in enumerate(st.session_state.questions):
-                with st.expander(f"Q{i+1}: {qa['question']}"):
-                    st.write(qa['answer'])
-        else:
-            st.info("Please upload and process a PDF document first.")
-    
-    # Multiple Choice Page
-    elif selected == "Multiple Choice":
-        st.title("Multiple Choice Questions")
-        
-        if st.session_state.mcqs:
-            # Create state for tracking answers if not exists
-            if 'mcq_answers' not in st.session_state:
-                st.session_state.mcq_answers = [-1] * len(st.session_state.mcqs)
-            if 'mcq_submitted' not in st.session_state:
-                st.session_state.mcq_submitted = False
-                
-            for i, mcq in enumerate(st.session_state.mcqs):
-                st.markdown(f"<div class='question-card'>", unsafe_allow_html=True)
-                st.markdown(f"<div class='card-header'>Question {i+1}</div>", unsafe_allow_html=True)
-                st.markdown(f"### {mcq['question']}")
-                
-                # Radio buttons for options
-                answer = st.radio(
-                    "Select your answer:",
-                    mcq['options'],
-                    key=f"mcq_{i}"
-                )
-                
-                # Record answer
-                st.session_state.mcq_answers[i] = mcq['options'].index(answer) if answer in mcq['options'] else -1
-                
-                st.markdown("</div>", unsafe_allow_html=True)
-            
-            # Submit button
-            if st.button("Submit Answers"):
-                st.session_state.mcq_submitted = True
-                
-            # Show results if submitted
-            if st.session_state.mcq_submitted:
-                correct_count = 0
-                for i, mcq in enumerate(st.session_state.mcqs):
-                    user_answer = st.session_state.mcq_answers[i]
-                    correct_answer = mcq['correct_answer']
-                    
-                    if isinstance(correct_answer, str) and correct_answer.isdigit():
-                        correct_answer = int(correct_answer)
-                    
-                    if user_answer == correct_answer:
-                        correct_count += 1
-                
-                st.success(f"You got {correct_count} out of {len(st.session_state.mcqs)} correct!")
-                
-                # Reset button
-                if st.button("Try Again"):
-                    st.session_state.mcq_submitted = False
-                    st.session_state.mcq_answers = [-1] * len(st.session_state.mcqs)
-                    st.experimental_rerun()
-        else:
-            st.info("Please upload and process a PDF document first.")
-    
-    # Chat Page
-    elif selected == "Chat":
-        st.title("Chat with Document")
-        
-        if st.session_state.qa_chain:
-            # Display chat history
-            for i, message in enumerate(st.session_state.chat_history):
-                if i % 2 == 0:  # User message
-                    st.markdown(f"<div class='chat-message user-message'><strong>You:</strong> {message}</div>", unsafe_allow_html=True)
-                else:  # Assistant message
-                    st.markdown(f"<div class='chat-message assistant-message'><strong>PDF Agent:</strong> {message}</div>", unsafe_allow_html=True)
-            
-            # Chat input
-            user_question = st.text_input("Ask a question about the document:", key="chat_input")
-            
-            if user_question:
-                if st.button("Send"):
-                    with st.spinner("Thinking..."):
-                        # Add user question to history
-                        st.session_state.chat_history.append(user_question)
-                        
-                        # Get chat history in the format expected by the chain
-                        chain_history = []
-                        for i in range(0, len(st.session_state.chat_history)-1, 2):
-                            if i+1 < len(st.session_state.chat_history):
-                                chain_history.append((st.session_state.chat_history[i], st.session_state.chat_history[i+1]))
-                        
-                        # Get response from chain
-                        result = st.session_state.qa_chain({"question": user_question, "chat_history": chain_history})
-                        answer = result["answer"]
-                        
-                        # Add response to history
-                        st.session_state.chat_history.append(answer)
-                        
-                        # Rerun to update the UI
-                        st.experimental_rerun()
-        else:
-            st.info("Please upload and process a PDF document first.")
+    # Display the selected page
+    if st.session_state.page == "Upload":
+        upload_page()
+    elif st.session_state.page == "Summary":
+        summary_page()
+    elif st.session_state.page == "Questions":
+        questions_page()
+    elif st.session_state.page == "Multiple Choice":
+        mcq_page()
+    elif st.session_state.page == "Chat":
+        chat_page()
 
 if __name__ == "__main__":
     main()
